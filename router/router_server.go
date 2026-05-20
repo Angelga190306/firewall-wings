@@ -216,6 +216,10 @@ func deleteServer(c *gin.Context) {
 	// Destroy the environment; in Docker this will handle a running container and
 	// forcibly terminate it before removing the container, so we do not need to handle
 	// that here.
+	if err := s.ClearFirewall(); err != nil {
+		s.Log().WithField("error", err).Warn("failed to clear firewall rules while deleting server")
+	}
+
 	if err := s.Environment.Destroy(); err != nil {
 		middleware.CaptureAndAbort(c, err)
 		return
