@@ -52,6 +52,7 @@ type Configuration struct {
 	Allocations           environment.Allocations `json:"allocations"`
 	Build                 environment.Limits      `json:"build"`
 	CrashDetectionEnabled bool                    `json:"crash_detection_enabled"`
+	Firewall              []FirewallRule          `json:"firewall"`
 	Mounts                []Mount                 `json:"mounts"`
 	Egg                   EggConfiguration        `json:"egg,omitempty"`
 

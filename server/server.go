@@ -212,6 +212,10 @@ func (s *Server) Sync() error {
 		s.Sftp().CancelAll()
 	}
 
+	if err := s.SyncFirewall(); err != nil {
+		s.Log().WithField("error", err).Warn("failed to apply firewall rules while syncing server")
+	}
+
 	return nil
 }
 

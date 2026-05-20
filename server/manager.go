@@ -228,6 +228,10 @@ func (m *Manager) InitServer(data remote.ServerConfigurationResponse) (*Server, 
 		s.Filesystem().HasSpaceAvailable(true)
 	}
 
+	if err := s.SyncFirewall(); err != nil {
+		s.Log().WithField("error", err).Warn("failed to apply firewall rules while initializing server")
+	}
+
 	return s, nil
 }
 
