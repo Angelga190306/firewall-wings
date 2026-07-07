@@ -39,6 +39,25 @@ Puedes seguir usando el usuario normal de Pterodactyl dentro de la configuracion
 
 ## Instalacion rapida en un nodo
 
+Clonar y ejecutar el instalador automatico:
+
+```bash
+rm -rf /usr/local/src/firewall-wings
+git clone https://github.com/Angelga190306/firewall-wings.git /usr/local/src/firewall-wings
+cd /usr/local/src/firewall-wings
+sudo bash scripts/install-wings.sh
+```
+
+El instalador hace todo:
+- Instala dependencias (Go, nftables, etc.)
+- Compila Wings
+- Instala el binario
+- Configura el fix de iptables (cadena DOCKER)
+- Crea e inicia el servicio Wings
+- Verifica que los endpoints `/api/system` y `/api/system/resources` respondan
+
+Si prefieres hacerlo manual:
+
 ### 1. Instalar dependencias
 
 ```bash
@@ -204,22 +223,20 @@ En algunos sistemas con `iptables-nft`, la cadena `DOCKER` en la tabla `nat` pue
 iptables: No chain/target/match by that name.
 ```
 
-Para evitarlo, se incluye un servicio systemd que asegura que las cadenas necesarias existan:
+Para evitarlo, el instalador (`scripts/install-wings.sh`) configura automaticamente un servicio systemd que asegura que las cadenas necesarias existan siempre. Si ya tienes Wings instalado y quieres agregar el fix manualmente:
 
 ```bash
-# Copiar el script
+/usr/local/src/firewall-wings/scripts/install-wings.sh
+```
+
+O paso a paso:
+
+```bash
 cp scripts/fix-docker-iptables.sh /usr/local/bin/fix-docker-iptables.sh
 chmod +x /usr/local/bin/fix-docker-iptables.sh
-
-# Instalar el servicio
 cp scripts/docker-iptables-fix.service /etc/systemd/system/docker-iptables-fix.service
-
-# Agregar dependencia a Wings
 mkdir -p /etc/systemd/system/wings.service.d
 cp scripts/wings-docker-iptables-dropin.conf /etc/systemd/system/wings.service.d/docker-iptables-fix.conf
-
 systemctl daemon-reload
-systemctl enable docker-iptables-fix.service
-systemctl start docker-iptables-fix.service
-systemctl restart wings
+systemctl enable --now docker-iptables-fix.service
 ```
