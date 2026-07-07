@@ -195,3 +195,31 @@ Se intento mezclar una IP remota IPv4 con una allocation IPv6, o viceversa.
 ## Nota final
 
 Este repositorio cubre la parte daemon-side del firewall. Sin el panel modificado, el nodo no recibira reglas para aplicar.
+
+## Fix: Docker iptables (DOCKER chain missing)
+
+En algunos sistemas con `iptables-nft`, la cadena `DOCKER` en la tabla `nat` puede desaparecer y los contenedores fallan al iniciar con:
+
+```
+iptables: No chain/target/match by that name.
+```
+
+Para evitarlo, se incluye un servicio systemd que asegura que las cadenas necesarias existan:
+
+```bash
+# Copiar el script
+cp scripts/fix-docker-iptables.sh /usr/local/bin/fix-docker-iptables.sh
+chmod +x /usr/local/bin/fix-docker-iptables.sh
+
+# Instalar el servicio
+cp scripts/docker-iptables-fix.service /etc/systemd/system/docker-iptables-fix.service
+
+# Agregar dependencia a Wings
+mkdir -p /etc/systemd/system/wings.service.d
+cp scripts/wings-docker-iptables-dropin.conf /etc/systemd/system/wings.service.d/docker-iptables-fix.conf
+
+systemctl daemon-reload
+systemctl enable docker-iptables-fix.service
+systemctl start docker-iptables-fix.service
+systemctl restart wings
+```

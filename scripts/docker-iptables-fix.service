@@ -1,0 +1,13 @@
+[Unit]
+Description=Ensure Docker iptables chains exist
+Before=wings.service docker.service
+After=network.target
+DefaultDependencies=no
+
+[Service]
+Type=oneshot
+ExecStart=/usr/local/bin/fix-docker-iptables.sh
+RemainAfterExit=yes
+
+[Install]
+WantedBy=multi-user.target
