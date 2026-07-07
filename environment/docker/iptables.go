@@ -16,8 +16,20 @@ func ensureDockerIptablesChains(ctx context.Context) {
 
 	runIptables(ctx, "-t", "filter", "-N", "DOCKER")
 	runIptables(ctx, "-t", "filter", "-N", "DOCKER-USER")
-	ensureIptablesRule(ctx, []string{"-C", "FORWARD", "-j", "DOCKER"}, []string{"-I", "FORWARD", "-j", "DOCKER"})
-	ensureIptablesRule(ctx, []string{"-C", "FORWARD", "-j", "DOCKER-USER"}, []string{"-A", "FORWARD", "-j", "DOCKER-USER"})
+	removeIptablesRule(ctx, "FORWARD", "-j", "DOCKER")
+	ensureIptablesRule(ctx, []string{"-C", "FORWARD", "-j", "DOCKER-USER"}, []string{"-I", "FORWARD", "-j", "DOCKER-USER"})
+}
+
+func removeIptablesRule(ctx context.Context, chain string, ruleArgs ...string) {
+	for {
+		checkArgs := append([]string{"-C", chain}, ruleArgs...)
+		cmd := exec.CommandContext(ctx, "iptables", checkArgs...)
+		if err := cmd.Run(); err != nil {
+			return
+		}
+		deleteArgs := append([]string{"-D", chain}, ruleArgs...)
+		runIptables(ctx, deleteArgs...)
+	}
 }
 
 func ensureIptablesRule(ctx context.Context, checkArgs []string, addArgs []string) {
