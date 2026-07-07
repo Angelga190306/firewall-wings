@@ -120,6 +120,7 @@ func (e *Environment) Start(ctx context.Context) error {
 		return errors.WrapIf(err, "environment/docker: failed to attach to container")
 	}
 
+	ensureDockerIptablesChains(actx)
 	if err := e.client.ContainerStart(actx, e.Id, container.StartOptions{}); err != nil {
 		return errors.WrapIf(err, "environment/docker: failed to start container")
 	}
