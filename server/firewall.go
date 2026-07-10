@@ -5,6 +5,7 @@ import (
 	"context"
 	"fmt"
 	"net/netip"
+	"os"
 	"os/exec"
 	"regexp"
 	"sort"
@@ -13,7 +14,6 @@ import (
 	"emperror.dev/errors"
 	"github.com/apex/log"
 
-	"github.com/pterodactyl/wings/config"
 	"github.com/pterodactyl/wings/remote"
 )
 
@@ -26,7 +26,7 @@ const (
 var (
 	errFirewallBackendUnavailable = errors.New("firewall backend is not available on this node")
 	errFirewallInvalidRule        = errors.New("firewall rule is invalid")
-	chainSanitizer               = regexp.MustCompile(`[^a-zA-Z0-9_]`)
+	chainSanitizer                = regexp.MustCompile(`[^a-zA-Z0-9_]`)
 )
 
 type FirewallRule struct {
@@ -172,7 +172,7 @@ func (m *firewallManager) ensureBackend() error {
 		return errors.WrapIf(errFirewallBackendUnavailable, "nft executable was not found on the system")
 	}
 
-	if config.Get().System.Username != "root" && config.Get().System.User.Uid != 0 {
+	if os.Geteuid() != 0 {
 		return errors.Wrap(errFirewallBackendUnavailable, "wings must run as root to manage nftables rules")
 	}
 
