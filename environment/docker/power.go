@@ -124,6 +124,7 @@ func (e *Environment) Start(ctx context.Context) error {
 	if err := e.client.ContainerStart(actx, e.Id, container.StartOptions{}); err != nil {
 		return errors.WrapIf(err, "environment/docker: failed to start container")
 	}
+	ensureDockerIptablesChains(actx)
 
 	// No errors, good to continue through.
 	sawError = false

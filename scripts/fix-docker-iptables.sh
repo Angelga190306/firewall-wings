@@ -45,6 +45,52 @@ bridge_subnet() {
     ip -4 route show dev "$iface" scope link 2>/dev/null | awk '{print $1}' | head -1
 }
 
+cleanup_stale_dnat_rules() {
+    command -v docker &>/dev/null || return 0
+    command -v jq &>/dev/null || return 0
+
+    while IFS=$'\t' read -r container_ip container_port protocol host_ip host_port; do
+        [ -n "$container_ip" ] || continue
+        [ -n "$container_port" ] || continue
+        [ -n "$protocol" ] || continue
+        [ -n "$host_port" ] || continue
+        [ "$protocol" = "tcp" ] || [ "$protocol" = "udp" ] || continue
+        [ "$host_ip" != "::" ] || continue
+
+        expected_destination="${container_ip}:${container_port}"
+        while IFS= read -r rule; do
+            [[ "$rule" == "-A DOCKER "* ]] || continue
+            [[ "$rule" == *" -p $protocol "* ]] || continue
+            [[ "$rule" == *" --dport $host_port "* ]] || continue
+            [[ "$rule" == *" -j DNAT "* ]] || continue
+
+            if [ -n "$host_ip" ] && [ "$host_ip" != "0.0.0.0" ]; then
+                [[ "$rule" == *" -d $host_ip/32 "* ]] || continue
+            fi
+
+            [[ "$rule" == *" --to-destination $expected_destination"* ]] && continue
+
+            delete_rule="${rule/#-A DOCKER/-D DOCKER}"
+            read -r -a delete_args <<< "$delete_rule"
+            iptables -t nat "${delete_args[@]}"
+        done < <(iptables -t nat -S DOCKER 2>/dev/null)
+    done < <(
+        docker ps -q 2>/dev/null \
+            | xargs -r docker inspect 2>/dev/null \
+            | jq -r '
+                .[]
+                | ([.NetworkSettings.Networks[]?.IPAddress] | map(select(length > 0)) | first) as $container_ip
+                | select($container_ip != null)
+                | ((.NetworkSettings.Ports // {}) | to_entries[])
+                | select(.value != null)
+                | (.key | split("/")) as $container_port
+                | .value[]
+                | [$container_ip, $container_port[0], $container_port[1], (.HostIp // "0.0.0.0"), .HostPort]
+                | @tsv
+            '
+    )
+}
+
 # --- Docker base chains ---
 ensure_chain nat DOCKER
 ensure_chain filter DOCKER
@@ -81,5 +127,10 @@ for iface in pterodactyl0 docker0 $(docker network ls -q 2>/dev/null | xargs -r 
         ensure_rule_simple nat POSTROUTING -A -s "$subnet" ! -o "$iface" -j MASQUERADE
     fi
 done
+
+# Docker can leave an older DNAT entry before the current mapping when a
+# container is recreated with a different internal IP. Reconcile only
+# conflicting published endpoints for containers that are currently running.
+cleanup_stale_dnat_rules
 
 exit 0
