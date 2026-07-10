@@ -37,15 +37,12 @@ Eso no significa que debas cambiar el `username` interno de `/etc/pterodactyl/co
 
 Puedes seguir usando el usuario normal de Pterodactyl dentro de la configuracion. Lo importante es que el servicio `wings.service` se ejecute como `root`.
 
-## Instalacion rapida en un nodo
+## Instalacion o actualizacion automatica
 
-Clonar y ejecutar el instalador automatico:
+Ejecuta un solo comando como `root`. El instalador descarga siempre la ultima version de la rama `v1.13.1-firewall`, compila, respalda el binario anterior, asegura que Wings se ejecute como root, instala los fixes y reinicia el servicio:
 
 ```bash
-rm -rf /usr/local/src/firewall-wings
-git clone https://github.com/Angelga190306/firewall-wings.git /usr/local/src/firewall-wings
-cd /usr/local/src/firewall-wings
-sudo bash scripts/install-wings.sh
+curl -fsSL https://raw.githubusercontent.com/Angelga190306/firewall-wings/v1.13.1-firewall/scripts/install-wings.sh | sudo bash
 ```
 
 El instalador hace todo:
@@ -170,11 +167,19 @@ Si el servidor tiene reglas, deberias ver una cadena tipo `pws_<uuid_sanitizado>
 
 ## Actualizar el fork en un nodo
 
+El comando automatico recomendado es el mismo para instalaciones y actualizaciones:
+
+```bash
+curl -fsSL https://raw.githubusercontent.com/Angelga190306/firewall-wings/v1.13.1-firewall/scripts/install-wings.sh | sudo bash
+```
+
+Si prefieres actualizar manualmente el checkout:
+
 ```bash
 cd /usr/local/src/firewall-wings
 git fetch --all
-git checkout main
-git pull --ff-only
+git checkout v1.13.1-firewall
+git pull --ff-only origin v1.13.1-firewall
 go build -o wings .
 systemctl stop wings
 install -m 755 ./wings /usr/local/bin/wings
