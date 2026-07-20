@@ -173,6 +173,31 @@ func (e *Environment) Create() error {
 	labels["Service"] = "Pterodactyl"
 	labels["ContainerType"] = "server_process"
 
+	// LUMENVM KVM support (optional): passthrough /dev/kvm and expose auto
+	// ports/disk for LumenVM images. No-op for every other image, so enabling
+	// this does not affect normal servers. Requires the node to have /dev/kvm
+	// available (the installer sets up its permissions when KVM is detected).
+	resources := e.Configuration.Limits().AsContainerResources()
+	containerEnv := e.Configuration.EnvironmentVariables()
+	if strings.HasPrefix(e.meta.Image, "ghcr.io/david1117dev/lumenvm") && e.meta.Image != "ghcr.io/david1117dev/lumenvm:shell" {
+		e.log().Debug("environment/docker: attaching KVM device for LumenVM image")
+		resources.Devices = append(resources.Devices, container.DeviceMapping{
+			PathOnHost:        "/dev/kvm",
+			PathInContainer:   "/dev/kvm",
+			CgroupPermissions: "rwm",
+		})
+		portSet := make(map[string]struct{})
+		for port := range a.Exposed() {
+			portSet[strings.Split(string(port), "/")[0]] = struct{}{}
+		}
+		ports := make([]string, 0, len(portSet))
+		for port := range portSet {
+			ports = append(ports, port)
+		}
+		containerEnv = append(containerEnv, "ADDITIONAL_PORTS_AUTO="+strings.Join(ports, ","))
+		containerEnv = append(containerEnv, "DISK_SPACE_AUTO="+strconv.FormatInt(e.Configuration.Limits().DiskSpace, 10))
+	}
+
 	conf := &container.Config{
 		Hostname:     e.Id,
 		Domainname:   cfg.Docker.Domainname,
@@ -183,7 +208,7 @@ func (e *Environment) Create() error {
 		Tty:          true,
 		ExposedPorts: a.Exposed(),
 		Image:        strings.TrimPrefix(e.meta.Image, "~"),
-		Env:          e.Configuration.EnvironmentVariables(),
+		Env:          containerEnv,
 		Labels:       labels,
 	}
 
@@ -239,7 +264,7 @@ func (e *Environment) Create() error {
 
 		// Define resource limits for the container based on the data passed through
 		// from the Panel.
-		Resources: e.Configuration.Limits().AsContainerResources(),
+		Resources: resources,
 
 		DNS: cfg.Docker.Network.Dns,
 

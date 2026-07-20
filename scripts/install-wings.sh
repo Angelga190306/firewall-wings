@@ -18,10 +18,14 @@ REPO_URL="https://github.com/Angelga190306/firewall-wings.git"
 REPO_BRANCH="v1.13.1-firewall"
 INSTALL_REPO_DIR="${WINGS_INSTALL_REPO_DIR:-/usr/local/src/firewall-wings}"
 
-# KVM (LumenVM): auto = detectar y aplicar si el nodo es compatible,
-# on = forzar el parche aunque no se detecte, off = nunca aplicar.
+# KVM (LumenVM): el soporte KVM va integrado en el codigo (environment/docker/container.go),
+# solo se activa para imagenes ghcr.io/david1117dev/lumenvm. Aqui solo gestionamos los
+# permisos de /dev/kvm cuando el nodo es compatible.
+#   auto = detectar y configurar /dev/kvm si el nodo es compatible
+#   on   = forzar la configuracion de /dev/kvm aunque no se detecte
+#   off  = no tocar /dev/kvm
 WINGS_INSTALL_KVM="${WINGS_INSTALL_KVM:-auto}"
-KVM_PATCHED=false
+KVM_READY=false
 KVM_MODE=""
 
 # --- Deteccion de compatibilidad KVM ---
@@ -39,27 +43,6 @@ detect_kvm_support() {
         KVM_MODE="unsupported"
     fi
     return 1
-}
-
-# Aplica el parche KVM de LumenVM reemplazando environment/docker/container.go
-# en el directorio indicado. Hace respaldo previo. Devuelve 0 si OK.
-apply_kvm_patch_to_dir() {
-    local dir="$1"
-    local target="$dir/environment/docker/container.go"
-    if [ ! -f "$target" ]; then
-        warn "KVM: no existe $target, no se puede parchar"
-        return 1
-    fi
-
-    cp -a "$target" "${target}.pre-kvm.$(date +%Y%m%d-%H%M%S)" 2>/dev/null || true
-
-    if ! curl -fsSL https://cdn.lumenvm.cloud/pterodactyl.go -o "$target"; then
-        warn "KVM: no se pudo descargar el parche desde cdn.lumenvm.cloud"
-        return 1
-    fi
-
-    ok "KVM: parche LumenVM aplicado en $target"
-    return 0
 }
 
 # Configura permisos persistentes de /dev/kvm (udev rules).
@@ -142,18 +125,21 @@ else
 fi
 export PATH=$PATH:/usr/local/go/bin
 
-# --- 2b. Deteccion y parche KVM (LumenVM) ---
+# --- 2b. Deteccion KVM (LumenVM) ---
+# El soporte KVM ya va en el binario (environment/docker/container.go); aqui
+# solo decidimos si configuramos los permisos de /dev/kvm. Si el nodo no es
+# compatible, se avisa y se continua instalando todo lo demas.
 if [ "$WINGS_INSTALL_KVM" != "off" ]; then
     if detect_kvm_support; then
-        ok "KVM: nodo compatible (/dev/kvm disponible)"
-        apply_kvm_patch_to_dir "$REPO_DIR" && KVM_PATCHED=true
+        ok "KVM: nodo compatible (/dev/kvm disponible). Se configuraran permisos tras instalar."
+        KVM_READY=true
     elif [ "$WINGS_INSTALL_KVM" = "on" ]; then
-        warn "KVM: no detectado, pero WINGS_INSTALL_KVM=on fuerza el parche"
-        apply_kvm_patch_to_dir "$REPO_DIR" && KVM_PATCHED=true
+        warn "KVM: no detectado, pero WINGS_INSTALL_KVM=on fuerza la configuracion de /dev/kvm"
+        KVM_READY=true
     elif [ "$KVM_MODE" = "cpu-only" ]; then
-        warn "KVM: la CPU soporta virtualizacion (vmx/svm) pero /dev/kvm no esta disponible. Parche omitido; el resto si se instala."
+        warn "KVM: la CPU soporta virtualizacion (vmx/svm) pero /dev/kvm no esta disponible. Permisos omitidos; el resto si se instala."
     else
-        warn "KVM: nodo no compatible (sin /dev/kvm ni vmx/svm en CPU). Parche omitido; el resto si se instala."
+        warn "KVM: nodo no compatible (sin /dev/kvm ni vmx/svm en CPU). Permisos omitidos; el resto si se instala."
     fi
 else
     log "KVM: deshabilitado por WINGS_INSTALL_KVM=off"
@@ -263,8 +249,8 @@ else
     fail "Wings no se esta ejecutando como root (User=${WINGS_SERVICE_USER:-no definido})."
 fi
 
-# --- 9b. Permisos KVM si se aplico el parche ---
-if [ "$KVM_PATCHED" = "true" ]; then
+# --- 9b. Permisos KVM si el nodo es compatible ---
+if [ "$KVM_READY" = "true" ]; then
     setup_kvm_permissions
 fi
 
@@ -290,12 +276,6 @@ if [ "$CHECKOUT_UPDATED" != "true" ]; then
     git clone --quiet --branch "$REPO_BRANCH" "$REPO_URL" "$INSTALL_REPO_DIR"
 fi
 ok "Checkout actualizado: $(git -C "$INSTALL_REPO_DIR" rev-parse --short HEAD)"
-
-# --- 10b. Replicar parche KVM en el checkout persistente ---
-if [ "$KVM_PATCHED" = "true" ]; then
-    log "Replicando parche KVM en el checkout persistente..."
-    apply_kvm_patch_to_dir "$INSTALL_REPO_DIR" || true
-fi
 
 # --- 11. Verificar endpoints ---
 WINGS_PORT=$(grep -oP '^\s*port:\s*\K\d+' /etc/pterodactyl/config.yml 2>/dev/null || echo "8080")
@@ -327,12 +307,12 @@ echo "  Wings:     $(/usr/local/bin/wings version 2>&1 | head -1)"
 echo "  Commit:    $(git -C "$INSTALL_REPO_DIR" rev-parse --short HEAD)"
 echo "  Puerto:    $WINGS_PORT"
 echo "  iptables:  $(systemctl is-active docker-iptables-fix.service)"
-if [ "$KVM_PATCHED" = "true" ]; then
-    echo "  KVM:       parche aplicado (LumenVM)"
+if [ "$KVM_READY" = "true" ]; then
+    echo "  KVM:       listo (soporte en binario + permisos /dev/kvm)"
 elif [ "$WINGS_INSTALL_KVM" = "off" ]; then
-    echo "  KVM:       deshabilitado"
+    echo "  KVM:       deshabilitado (binario con soporte, sin permisos /dev/kvm)"
 else
-    echo "  KVM:       no compatible ($KVM_MODE) - omitido"
+    echo "  KVM:       no compatible ($KVM_MODE) - binario con soporte, sin /dev/kvm"
 fi
 echo ""
 echo "  Logs:      journalctl -u wings --no-pager -n 50 -f"

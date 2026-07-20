@@ -9,6 +9,16 @@
                                                
 Welcome to the LumenVM Wings build tutorial. This is fully optional and does not cause security issues.
 
+> Nota de este fork: el parche KVM de LumenVM ya esta integrado directamente en
+> `environment/docker/container.go` (solo se activa para imagenes
+> `ghcr.io/david1117dev/lumenvm`). No necesitas aplicar el `kvm.sh` ni descargar
+> `pterodactyl.go` desde el CDN. El instalador `scripts/install-wings.sh`
+> detecta si el nodo tiene `/dev/kvm` y, si es asi, configura sus permisos
+> persistentes via udev. Si el nodo no es compatible con KVM, avisa y continua
+> instalando el resto. Ve la seccion "KVM (LumenVM)" del README.md.
+>
+> El procedimiento manual de abajo sigue siendo valido si quieres reconstruir
+> Wings desde cero con el parche, pero en este fork basta con compilar el repo.
 
 - Run this command as root to install the patch automatically: 
 
