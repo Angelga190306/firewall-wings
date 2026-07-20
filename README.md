@@ -245,3 +245,28 @@ cp scripts/wings-docker-iptables-dropin.conf /etc/systemd/system/wings.service.d
 systemctl daemon-reload
 systemctl enable --now docker-iptables-fix.service
 ```
+
+## KVM (LumenVM) - opcional
+
+El parche KVM de LumenVM permite que los servidores usen virtualizacion KVM. Es **opcional** y solo funciona en nodos compatibles con KVM (con `/dev/kvm` disponible). Ve `KVM.md` para el detalle.
+
+El instalador `scripts/install-wings.sh` **detecta automaticamente** la compatibilidad KVM:
+
+- **Nodo compatible** (`/dev/kvm` presente): aplica el parche LumenVM sobre `environment/docker/container.go`, recompila Wings y configura los permisos persistentes de `/dev/kvm` via udev (`/etc/udev/rules.d/99-kvm.rules`).
+- **Nodo no compatible** (sin `/dev/kvm` ni flags `vmx`/`svm` en CPU): **solo lo indica** y continúa instalando todo lo demas (Wings, firewall, fix iptables). No aplica el parche.
+
+Puedes forzar o deshabilitar el comportamiento con la variable de entorno `WINGS_INSTALL_KVM`:
+
+| Valor          | Comportamiento                                                              |
+|----------------|-----------------------------------------------------------------------------|
+| `auto` (default) | Aplica el parche solo si detecta KVM.                                      |
+| `on`           | Fuerza la aplicacion del parche aunque no se detecte KVM.                    |
+| `off`          | No aplica el parche KVM nunca.                                              |
+
+Ejemplo para forzarlo:
+
+```bash
+WINGS_INSTALL_KVM=on sudo -E bash scripts/install-wings.sh
+```
+
+> Nota: el parche KVM reemplaza `environment/docker/container.go` con la version de LumenVM (`https://cdn.lumenvm.cloud/pterodactyl.go`). El instalador hace un respaldo previo (`container.go.pre-kvm.<fecha>`). Para revertirlo, restaura ese respaldo, recompila y elimina `/etc/udev/rules.d/99-kvm.rules` (ve `KVM.md`).

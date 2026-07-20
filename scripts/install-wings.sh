@@ -18,6 +18,61 @@ REPO_URL="https://github.com/Angelga190306/firewall-wings.git"
 REPO_BRANCH="v1.13.1-firewall"
 INSTALL_REPO_DIR="${WINGS_INSTALL_REPO_DIR:-/usr/local/src/firewall-wings}"
 
+# KVM (LumenVM): auto = detectar y aplicar si el nodo es compatible,
+# on = forzar el parche aunque no se detecte, off = nunca aplicar.
+WINGS_INSTALL_KVM="${WINGS_INSTALL_KVM:-auto}"
+KVM_PATCHED=false
+KVM_MODE=""
+
+# --- Deteccion de compatibilidad KVM ---
+# ready      -> /dev/kvm disponible (KVM funcional)
+# cpu-only   -> la CPU soporta vmx/svm pero /dev/kvm no esta disponible
+# unsupported-> ni /dev/kvm ni flags de virtualizacion
+detect_kvm_support() {
+    if [ -c /dev/kvm ]; then
+        KVM_MODE="ready"
+        return 0
+    fi
+    if grep -qE '(vmx|svm)' /proc/cpuinfo 2>/dev/null; then
+        KVM_MODE="cpu-only"
+    else
+        KVM_MODE="unsupported"
+    fi
+    return 1
+}
+
+# Aplica el parche KVM de LumenVM reemplazando environment/docker/container.go
+# en el directorio indicado. Hace respaldo previo. Devuelve 0 si OK.
+apply_kvm_patch_to_dir() {
+    local dir="$1"
+    local target="$dir/environment/docker/container.go"
+    if [ ! -f "$target" ]; then
+        warn "KVM: no existe $target, no se puede parchar"
+        return 1
+    fi
+
+    cp -a "$target" "${target}.pre-kvm.$(date +%Y%m%d-%H%M%S)" 2>/dev/null || true
+
+    if ! curl -fsSL https://cdn.lumenvm.cloud/pterodactyl.go -o "$target"; then
+        warn "KVM: no se pudo descargar el parche desde cdn.lumenvm.cloud"
+        return 1
+    fi
+
+    ok "KVM: parche LumenVM aplicado en $target"
+    return 0
+}
+
+# Configura permisos persistentes de /dev/kvm (udev rules).
+setup_kvm_permissions() {
+    if [ -e /dev/kvm ]; then
+        chmod 660 /dev/kvm 2>/dev/null || true
+    fi
+    echo 'KERNEL=="kvm", MODE="0660"' > /etc/udev/rules.d/99-kvm.rules
+    udevadm control --reload-rules 2>/dev/null || true
+    udevadm trigger --name-match=kvm 2>/dev/null || true
+    ok "KVM: permisos persistentes en /etc/udev/rules.d/99-kvm.rules"
+}
+
 install_base_dependencies() {
     if command -v apt-get &>/dev/null; then
         apt-get update -qq
@@ -60,12 +115,24 @@ if [ "${WINGS_BASE_DEPS_READY:-0}" != "1" ]; then
     install_base_dependencies
 fi
 
-# --- 2. Verificar Go ---
-if ! command -v go &>/dev/null; then
-    log "Instalando Go..."
+# --- 2. Verificar Go (requerido >= 1.24.0 por go.mod) ---
+go_version_ok() {
+    command -v go &>/dev/null || return 1
+    local v major rest minor
+    v="$(go version 2>/dev/null | grep -oE 'go[0-9]+\.[0-9]+(\.[0-9]+)?' | head -1 | sed 's/^go//')"
+    [ -n "$v" ] || return 1
+    major="${v%%.*}"; rest="${v#*.}"; minor="${rest%%.*}"
+    [ "$major" -gt 1 ] && return 0
+    [ "$major" -eq 1 ] && [ "$minor" -ge 24 ] && return 0
+    return 1
+}
+
+if ! go_version_ok; then
+    log "Instalando/actualizando Go (requerido >= 1.24.0)..."
     GO_VER=$(curl -fsSL https://go.dev/VERSION?m=text 2>/dev/null | head -1 || true)
     GO_VER="${GO_VER:-go1.24.1}"
     curl -fsSL "https://go.dev/dl/${GO_VER}.linux-amd64.tar.gz" -o /tmp/go.tar.gz
+    rm -rf /usr/local/go
     tar -C /usr/local -xzf /tmp/go.tar.gz
     ln -sf /usr/local/go/bin/go /usr/local/bin/go
     rm -f /tmp/go.tar.gz
@@ -74,6 +141,23 @@ else
     ok "Go ya instalado: $(go version)"
 fi
 export PATH=$PATH:/usr/local/go/bin
+
+# --- 2b. Deteccion y parche KVM (LumenVM) ---
+if [ "$WINGS_INSTALL_KVM" != "off" ]; then
+    if detect_kvm_support; then
+        ok "KVM: nodo compatible (/dev/kvm disponible)"
+        apply_kvm_patch_to_dir "$REPO_DIR" && KVM_PATCHED=true
+    elif [ "$WINGS_INSTALL_KVM" = "on" ]; then
+        warn "KVM: no detectado, pero WINGS_INSTALL_KVM=on fuerza el parche"
+        apply_kvm_patch_to_dir "$REPO_DIR" && KVM_PATCHED=true
+    elif [ "$KVM_MODE" = "cpu-only" ]; then
+        warn "KVM: la CPU soporta virtualizacion (vmx/svm) pero /dev/kvm no esta disponible. Parche omitido; el resto si se instala."
+    else
+        warn "KVM: nodo no compatible (sin /dev/kvm ni vmx/svm en CPU). Parche omitido; el resto si se instala."
+    fi
+else
+    log "KVM: deshabilitado por WINGS_INSTALL_KVM=off"
+fi
 
 # --- 3. Compilar Wings ---
 log "Compilando Wings..."
@@ -100,8 +184,10 @@ ok "Binario instalado en /usr/local/bin/wings"
 
 # --- 6. Configurar Wings si no existe config ---
 if [ ! -f /etc/pterodactyl/config.yml ]; then
-    log "Configurando Wings (necesitarás un token del panel)..."
-    /usr/local/bin/wings configure
+    log "Configurando Wings (necesitaras un token del panel)..."
+    if ! /usr/local/bin/wings configure; then
+        warn "'wings configure' no completo. El servicio no iniciara hasta que configures: sudo /usr/local/bin/wings configure"
+    fi
 fi
 
 # --- 7. Instalar fix de iptables ---
@@ -159,11 +245,13 @@ ok "Servicio Wings habilitado"
 
 # --- 9. Iniciar Wings ---
 log "Iniciando Wings..."
-systemctl start wings
+systemctl start wings || true
 sleep 2
 
 if systemctl is-active --quiet wings; then
     ok "Wings corriendo correctamente"
+elif [ ! -f /etc/pterodactyl/config.yml ]; then
+    warn "Wings no inicio porque falta configuracion. Corre: sudo /usr/local/bin/wings configure && sudo systemctl start wings"
 else
     fail "Wings no se inicio. Revisa: journalctl -u wings --no-pager -n 30"
 fi
@@ -173,6 +261,11 @@ if [ "$WINGS_SERVICE_USER" = "root" ]; then
     ok "Wings se ejecuta como root"
 else
     fail "Wings no se esta ejecutando como root (User=${WINGS_SERVICE_USER:-no definido})."
+fi
+
+# --- 9b. Permisos KVM si se aplico el parche ---
+if [ "$KVM_PATCHED" = "true" ]; then
+    setup_kvm_permissions
 fi
 
 # --- 10. Mantener checkout local actualizado para futuras ejecuciones ---
@@ -197,6 +290,12 @@ if [ "$CHECKOUT_UPDATED" != "true" ]; then
     git clone --quiet --branch "$REPO_BRANCH" "$REPO_URL" "$INSTALL_REPO_DIR"
 fi
 ok "Checkout actualizado: $(git -C "$INSTALL_REPO_DIR" rev-parse --short HEAD)"
+
+# --- 10b. Replicar parche KVM en el checkout persistente ---
+if [ "$KVM_PATCHED" = "true" ]; then
+    log "Replicando parche KVM en el checkout persistente..."
+    apply_kvm_patch_to_dir "$INSTALL_REPO_DIR" || true
+fi
 
 # --- 11. Verificar endpoints ---
 WINGS_PORT=$(grep -oP '^\s*port:\s*\K\d+' /etc/pterodactyl/config.yml 2>/dev/null || echo "8080")
@@ -228,6 +327,13 @@ echo "  Wings:     $(/usr/local/bin/wings version 2>&1 | head -1)"
 echo "  Commit:    $(git -C "$INSTALL_REPO_DIR" rev-parse --short HEAD)"
 echo "  Puerto:    $WINGS_PORT"
 echo "  iptables:  $(systemctl is-active docker-iptables-fix.service)"
+if [ "$KVM_PATCHED" = "true" ]; then
+    echo "  KVM:       parche aplicado (LumenVM)"
+elif [ "$WINGS_INSTALL_KVM" = "off" ]; then
+    echo "  KVM:       deshabilitado"
+else
+    echo "  KVM:       no compatible ($KVM_MODE) - omitido"
+fi
 echo ""
 echo "  Logs:      journalctl -u wings --no-pager -n 50 -f"
 echo "  Config:    /etc/pterodactyl/config.yml"

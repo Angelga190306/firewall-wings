@@ -14,11 +14,13 @@ func postServerFirewallSync(c *gin.Context) {
 
 	if err := s.SyncFirewallFromPanel(c.Request.Context()); err != nil {
 		message := err.Error()
-		status := http.StatusBadRequest
+
+		if stringsContainsAny(message, "firewall backend is not available", "wings must run as root") {
+			c.AbortWithStatusJSON(http.StatusServiceUnavailable, gin.H{"error": message})
+			return
+		}
 
 		if stringsContainsAny(message,
-			"firewall backend is not available",
-			"wings must run as root",
 			"invalid remote ip",
 			"invalid allocation ip",
 			"invalid action",
@@ -26,7 +28,7 @@ func postServerFirewallSync(c *gin.Context) {
 			"invalid port",
 			"address family mismatch",
 		) {
-			c.AbortWithStatusJSON(status, gin.H{"error": message})
+			c.AbortWithStatusJSON(http.StatusBadRequest, gin.H{"error": message})
 			return
 		}
 
