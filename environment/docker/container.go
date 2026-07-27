@@ -249,6 +249,20 @@ func (e *Environment) Create() error {
 		}
 	}
 
+	// Build the capability drop/add lists. By default Wings drops CAP_NET_BIND_SERVICE so
+	// that non-root processes inside the container cannot bind to privileged ports (< 1024).
+	// When docker.privileged_ports is enabled, we keep and explicitly add the capability so
+	// that servers can listen on any port from 1 to 65535.
+	capDrop := []string{
+		"setpcap", "mknod", "audit_write", "net_raw", "dac_override",
+		"fowner", "fsetid", "net_bind_service", "sys_chroot", "setfcap",
+	}
+	capAdd := []string{}
+	if cfg.Docker.PrivilegedPorts {
+		capDrop = removeCapability(capDrop, "net_bind_service")
+		capAdd = []string{"net_bind_service"}
+	}
+
 	hostConf := &container.HostConfig{
 		PortBindings: a.DockerBindings(),
 
@@ -276,12 +290,10 @@ func (e *Environment) Create() error {
 
 		SecurityOpt:    []string{"no-new-privileges"},
 		ReadonlyRootfs: true,
-		CapDrop: []string{
-			"setpcap", "mknod", "audit_write", "net_raw", "dac_override",
-			"fowner", "fsetid", "net_bind_service", "sys_chroot", "setfcap",
-		},
-		NetworkMode: networkMode,
-		UsernsMode:  container.UsernsMode(cfg.Docker.UsernsMode),
+		CapDrop:        capDrop,
+		CapAdd:         capAdd,
+		NetworkMode:    networkMode,
+		UsernsMode:     container.UsernsMode(cfg.Docker.UsernsMode),
 	}
 
 	ensureDockerIptablesChains(ctx)
@@ -467,6 +479,19 @@ func (e *Environment) convertMounts() []mount.Mount {
 			Target:   m.Target,
 			ReadOnly: m.ReadOnly,
 		}
+	}
+	return out
+}
+
+// removeCapability returns a copy of caps with the first occurrence of cap removed.
+// It does not modify the input slice.
+func removeCapability(caps []string, cap string) []string {
+	out := make([]string, 0, len(caps))
+	for _, c := range caps {
+		if c == cap {
+			continue
+		}
+		out = append(out, c)
 	}
 	return out
 }

@@ -91,6 +91,22 @@ type DockerConfiguration struct {
 	// remapping disabled
 	UsernsMode string `default:"" json:"userns_mode" yaml:"userns_mode"`
 
+	// PrivilegedPorts controls whether game-server containers are allowed to bind to
+	// TCP/UDP ports below 1024 (the "privileged" port range).
+	//
+	// By default Wings drops the CAP_NET_BIND_SERVICE capability from every container,
+	// which prevents non-root processes inside the container from binding to ports < 1024.
+	// When this option is enabled, Wings keeps (and explicitly adds) CAP_NET_BIND_SERVICE so
+	// that servers can listen on any port from 1 to 65535 without restriction.
+	//
+	// Wings itself already runs as root to manage nftables, so enabling this does not require
+	// any additional host-level configuration. The firewall rule engine (server/firewall.go)
+	// already accepts ports 1-65535, so this is the only change needed to lift the 1024 limit.
+	//
+	// Defaults to true so that any port can be used out of the box. Set to false to restore
+	// the standard Pterodactyl behavior of blocking privileged ports.
+	PrivilegedPorts bool `default:"true" json:"privileged_ports" yaml:"privileged_ports"`
+
 	LogConfig struct {
 		Type   string            `default:"local" json:"type" yaml:"type"`
 		Config map[string]string `default:"{\"max-size\":\"5m\",\"max-file\":\"1\",\"compress\":\"false\",\"mode\":\"non-blocking\"}" json:"config" yaml:"config"`

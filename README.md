@@ -165,6 +165,34 @@ Si el servidor tiene reglas, deberias ver una cadena tipo `pws_<uuid_sanitizado>
 - cuando existe al menos una regla `allow` para un puerto/protocolo, este fork agrega un `default deny` al final para ese mismo puerto/protocolo, haciendo efectiva una allowlist.
 - al borrar el servidor desde el panel, el fork limpia la cadena correspondiente en `nftables`.
 
+## Puertos privilegiados (puertos < 1024)
+
+Por defecto, Pterodactyl Wings **elimina** la capability `CAP_NET_BIND_SERVICE` de todos los contenedores, lo que impide que los procesos dentro del contenedor puedan escuchar en puertos TCP/UDP por debajo de 1024 (los "puertos privilegiados"). El motor de reglas del firewall (`server/firewall.go`) ya acepta cualquier puerto de 1 a 65535, asi que la unica barrera para usar puertos < 1024 es esa capability eliminada.
+
+Este fork agrega la opcion `docker.privileged_ports` en `config.yml` para levantar ese limite:
+
+```yaml
+docker:
+  privileged_ports: true
+```
+
+Cuando esta opcion esta activa:
+
+- Wings **no elimina** `CAP_NET_BIND_SERVICE` del contenedor y **la agrega** explicitamente via `CapAdd`.
+- Los servidores pueden escuchar en **cualquier puerto de 1 a 65535**, sin importar si es privilegiado o no.
+- No se necesita configuracion extra en el host: Wings ya corre como `root` (requisito del firewall con nftables), y la capability se hereda al contenedor.
+
+Por compatibilidad con el comportamiento original de Pterodactyl, puedes desactivarlo:
+
+```yaml
+docker:
+  privileged_ports: false
+```
+
+El valor por defecto es `true`, de modo que cualquier puerto funciona recien instalado. Si la opcion no existe en tu `config.yml`, se aplica `true` automaticamente.
+
+> Nota: para que un puerto < 1024 realmente funcione de extremo a extremo, el panel tambien debe permitir crear asignaciones con puertos por debajo de 1024. La parte de Wings ya no bloquea esos puertos; el resto depende del panel.
+
 ## Actualizar el fork en un nodo
 
 El comando automatico recomendado es el mismo para instalaciones y actualizaciones:
