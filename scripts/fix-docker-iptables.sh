@@ -102,7 +102,23 @@ ensure_chain filter DOCKER-INTERNAL
 
 # --- NAT hooks used by Docker ---
 ensure_rule_simple nat PREROUTING -A -m addrtype --dst-type LOCAL -j DOCKER
-ensure_rule_simple nat OUTPUT -A ! -d 127.0.0.0/8 -m addrtype --dst-type LOCAL -j DOCKER
+ensure_rule_simple nat OUTPUT -A ! -d 127.0.0/8 -m addrtype --dst-type LOCAL -j DOCKER
+
+# --- Loopback always accepted (INPUT, at the very top) ---
+# Docker publishes container ports to 0.0.0.0 and the kernel delivers traffic
+# to 127.0.0.1:<published-port> locally: docker's nat OUTPUT rule above
+# EXCLUDES 127.0.0.0/8 from DNAT, so traffic to 127.0.0.1:<port> stays local
+# and is processed by the INPUT chain (it never reaches the container via
+# FORWARD). The code-editor sidecar locks its published ports to the panel IP
+# with an appended `-A INPUT ... --dport <port> -j DROP`; without a loopback
+# exemption that DROP also swallows localhost, so the sidecar's own readiness
+# check (curl 127.0.0.1:<port>) times out and every code-server start fails on
+# nodes without ufw (ufw exempts loopback by default; this makes every node
+# behave the same). We INSERT at position 1 so it wins over the sidecar's
+# appended (-A) per-port DROPs. Idempotent: skip if a direct lo-accept exists.
+if ! has_rule filter INPUT -i lo -j ACCEPT; then
+    add_rule filter -I INPUT 1 -i lo -j ACCEPT
+fi
 
 # --- Correct FORWARD layout ---
 delete_all_rules filter FORWARD -j DOCKER
