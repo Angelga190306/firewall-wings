@@ -57,18 +57,83 @@ setup_kvm_permissions() {
 }
 
 install_base_dependencies() {
-    if command -v apt-get &>/dev/null; then
+    if [ "$OS_FAMILY" = "apt" ]; then
         apt-get update -qq
         apt-get install -y -qq curl git tar jq nftables iptables ca-certificates 2>/dev/null
-    elif command -v yum &>/dev/null; then
+    elif [ "$OS_FAMILY" = "yum" ]; then
         yum install -y -q curl git tar jq nftables iptables ca-certificates 2>/dev/null
     else
         fail "No se encontro un gestor de paquetes compatible (apt-get o yum)."
     fi
 }
 
+# --- Deteccion de SO (Debian/Ubuntu explicitos; fallback RHEL-family via yum) ---
+# Lee /etc/os-release y deja en variables el id, version, familia de gestor y
+# nombre bonito. Valida que sea una distro soportada; si no, aborta con mensaje
+# claro (a diferencia de antes, que solo miraba si existia apt-get/yum).
+OS_ID=""
+OS_VERSION=""
+OS_PRETTY=""
+OS_FAMILY=""   # apt | yum
+detect_os() {
+    if [ -r /etc/os-release ]; then
+        # shellcheck disable=SC1091
+        . /etc/os-release
+        OS_ID="${ID:-}"
+        OS_VERSION="${VERSION_ID:-}"
+        OS_PRETTY="${PRETTY_NAME:-${ID:-unknown}}"
+    fi
+    case "$OS_ID" in
+        debian|ubuntu)
+            OS_FAMILY="apt"
+            ;;
+        rhel|centos|rocky|almalinux|fedora|ol|amzn)
+            OS_FAMILY="yum"
+            ;;
+        "")
+            # /etc/os-release vacio/inexistente: caer al gestor disponible
+            if command -v apt-get &>/dev/null; then OS_FAMILY="apt"; OS_PRETTY="${OS_PRETTY:-Linux (apt)}";
+            elif command -v yum &>/dev/null; then OS_FAMILY="yum"; OS_PRETTY="${OS_PRETTY:-Linux (yum)}";
+            else fail "No se pudo detectar el SO (sin /etc/os-release ni apt-get/yum)."; fi
+            ;;
+        *)
+            fail "SO no soportado: '$OS_ID' ($OS_PRETTY). Soportados: Debian, Ubuntu (y RHEL/CentOS/Rocky/Alma/Fedora via yum)."
+            ;;
+    esac
+    log "SO: $OS_PRETTY  (id=$OS_ID ver=$OS_VERSION gestor=$OS_FAMILY)"
+}
+
+# --- Deteccion: primera instalacion vs actualizacion ---
+# UPDATE  = ya hay un Wings instalado (binario o servicio systemd).
+# INSTALL = no hay rastro previo -> provisionamiento limpio.
+# Esta distincion ramifica el comportamiento: en actualizacion se conserva la
+# config/servicio existentes y solo se reemplaza el binario; en primera
+# instalacion se configura (si falta config) y se crea el servicio.
+MODE=""
+detect_mode() {
+    if [ -x /usr/local/bin/wings ] || [ -f /etc/systemd/system/wings.service ]; then
+        MODE="update"
+        ok "Modo: ACTUALIZACION (Wings ya instalado en este nodo)"
+    else
+        MODE="install"
+        ok "Modo: PRIMERA INSTALACION (nodo limpio, sin Wings previo)"
+    fi
+}
+
+# --- Arquitectura para el tarball de Go ---
+go_arch() {
+    case "$(uname -m)" in
+        x86_64)        echo "amd64" ;;
+        aarch64|arm64) echo "arm64" ;;
+        *) fail "Arquitectura no soportada para Go: $(uname -m)" ;;
+    esac
+}
+
 # --- Verificar root ---
 [ "$EUID" -eq 0 ] || fail "Ejecuta como root: sudo bash $0"
+
+# Detectar SO lo antes posible (serve para bootstrap y para la ejecucion final).
+detect_os
 
 # --- Descargar y ejecutar siempre la ultima version del instalador ---
 if [ "${WINGS_INSTALL_BOOTSTRAPPED:-0}" != "1" ]; then
@@ -92,6 +157,9 @@ fi
 SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
 REPO_DIR="$(cd "$SCRIPT_DIR/.." && pwd)"
 
+# Distinguir primera instalacion vs actualizacion (ramifica pasos posteriores).
+detect_mode
+
 # --- 1. Instalar dependencias ---
 if [ "${WINGS_BASE_DEPS_READY:-0}" != "1" ]; then
     log "Instalando dependencias..."
@@ -114,12 +182,13 @@ if ! go_version_ok; then
     log "Instalando/actualizando Go (requerido >= 1.24.0)..."
     GO_VER=$(curl -fsSL https://go.dev/VERSION?m=text 2>/dev/null | head -1 || true)
     GO_VER="${GO_VER:-go1.24.1}"
-    curl -fsSL "https://go.dev/dl/${GO_VER}.linux-amd64.tar.gz" -o /tmp/go.tar.gz
+    GO_ARCH="$(go_arch)"
+    curl -fsSL "https://go.dev/dl/${GO_VER}.linux-${GO_ARCH}.tar.gz" -o /tmp/go.tar.gz
     rm -rf /usr/local/go
     tar -C /usr/local -xzf /tmp/go.tar.gz
     ln -sf /usr/local/go/bin/go /usr/local/bin/go
     rm -f /tmp/go.tar.gz
-    ok "Go instalado: $(go version)"
+    ok "Go instalado: $(go version) (${GO_ARCH})"
 else
     ok "Go ya instalado: $(go version)"
 fi
@@ -151,11 +220,13 @@ cd "$REPO_DIR"
 go build -o wings .
 ok "Wings compilado: $(./wings version 2>&1 | head -1)"
 
-# --- 4. Respaldar y detener Wings si existe ---
+# --- 4. Respaldar y detener Wings si existe (solo relevante en ACTUALIZACION) ---
 if [ -f /usr/local/bin/wings ]; then
     BACKUP_PATH="/usr/local/bin/wings.backup-$(date +%Y%m%d-%H%M%S)"
     cp -a /usr/local/bin/wings "$BACKUP_PATH"
-    ok "Respaldo creado: $BACKUP_PATH"
+    ok "Respaldo del binario anterior: $BACKUP_PATH"
+elif [ "$MODE" = "update" ]; then
+    warn "Modo ACTUALIZACION pero no habia binario en /usr/local/bin/wings; se instala nuevo."
 fi
 
 if systemctl is-active --quiet wings 2>/dev/null; then
@@ -168,11 +239,18 @@ log "Instalando binario..."
 install -o root -g root -m 0755 wings /usr/local/bin/wings
 ok "Binario instalado en /usr/local/bin/wings"
 
-# --- 6. Configurar Wings si no existe config ---
+# --- 6. Configurar Wings (solo en primera instalacion y si falta config) ---
+# En ACTUALIZACION nunca se toca /etc/pterodactyl/config.yml: se conserva el
+# token/URL del panel que ya funciona. Solo se configura si es primera
+# instalacion (MODE=install) y aun no hay config.
 if [ ! -f /etc/pterodactyl/config.yml ]; then
-    log "Configurando Wings (necesitaras un token del panel)..."
-    if ! /usr/local/bin/wings configure; then
-        warn "'wings configure' no completo. El servicio no iniciara hasta que configures: sudo /usr/local/bin/wings configure"
+    if [ "$MODE" = "update" ]; then
+        warn "ACTUALIZACION: falta /etc/pterodactyl/config.yml (¿se borro?). No se reconfigura automaticamente; ejecuta: sudo /usr/local/bin/wings configure"
+    else
+        log "Configurando Wings (necesitaras un token del panel)..."
+        if ! /usr/local/bin/wings configure; then
+            warn "'wings configure' no completo. El servicio no iniciara hasta que configures: sudo /usr/local/bin/wings configure"
+        fi
     fi
 fi
 
@@ -201,7 +279,7 @@ systemctl enable docker-iptables-fix.service
 systemctl start docker-iptables-fix.service
 ok "Fix de iptables activado"
 
-# --- 8. Crear servicio Wings si no existe ---
+# --- 8. Crear servicio Wings si no existe (en ACTUALIZACION se conserva el actual) ---
 if [ ! -f /etc/systemd/system/wings.service ]; then
     log "Creando servicio Wings..."
     cat > /etc/systemd/system/wings.service << 'EOF'
@@ -229,9 +307,13 @@ fi
 systemctl enable wings
 ok "Servicio Wings habilitado"
 
-# --- 9. Iniciar Wings ---
-log "Iniciando Wings..."
-systemctl start wings || true
+# --- 9. Iniciar/Reiniciar Wings ---
+if [ "$MODE" = "update" ]; then
+    log "Reiniciando Wings (actualizacion)..."
+else
+    log "Iniciando Wings (primera instalacion)..."
+fi
+systemctl restart wings 2>/dev/null || systemctl start wings || true
 sleep 2
 
 if systemctl is-active --quiet wings; then
@@ -300,9 +382,15 @@ fi
 
 echo ""
 echo -e "${GREEN}========================================${NC}"
-echo -e "${GREEN}  Instalación completada${NC}"
+if [ "$MODE" = "update" ]; then
+    echo -e "${GREEN}  Actualización completada${NC}"
+else
+    echo -e "${GREEN}  Instalación completada${NC}"
+fi
 echo -e "${GREEN}========================================${NC}"
 echo ""
+echo "  Modo:      ${MODE}"
+echo "  SO:        ${OS_PRETTY}"
 echo "  Wings:     $(/usr/local/bin/wings version 2>&1 | head -1)"
 echo "  Commit:    $(git -C "$INSTALL_REPO_DIR" rev-parse --short HEAD)"
 echo "  Puerto:    $WINGS_PORT"
