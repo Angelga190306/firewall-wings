@@ -46,11 +46,16 @@ detect_kvm_support() {
 }
 
 # Configura permisos persistentes de /dev/kvm (udev rules).
+# IMPORTANTE: debe ser 0666 (world rw), NO 0660. Los contenedores de Pterodactyl
+# corren como uid 988 (no root, no en grupo kvm) y Docker no propaga los grupos
+# suplementarios del host al contenedor, por lo que 0660 deja a /dev/kvm
+# inaccesible para el usuario del contenedor y los servidores LumenVM fallan con
+# "permission denied /dev/kvm".
 setup_kvm_permissions() {
     if [ -e /dev/kvm ]; then
-        chmod 660 /dev/kvm 2>/dev/null || true
+        chmod 666 /dev/kvm 2>/dev/null || true
     fi
-    echo 'KERNEL=="kvm", MODE="0660"' > /etc/udev/rules.d/99-kvm.rules
+    echo 'KERNEL=="kvm", MODE="0666"' > /etc/udev/rules.d/99-kvm.rules
     udevadm control --reload-rules 2>/dev/null || true
     udevadm trigger --name-match=kvm 2>/dev/null || true
     ok "KVM: permisos persistentes en /etc/udev/rules.d/99-kvm.rules"
