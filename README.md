@@ -45,13 +45,45 @@ Ejecuta un solo comando como `root`. El instalador descarga siempre la ultima ve
 curl -fsSL https://raw.githubusercontent.com/Angelga190306/firewall-wings/v1.13.1-firewall/scripts/install-wings.sh | sudo bash
 ```
 
-El instalador hace todo:
+El instalador hace todo (deja un nodo **nuevo** completo):
 - Instala dependencias (Go, nftables, etc.)
 - Compila Wings
 - Instala el binario
 - Configura el fix de iptables (cadena DOCKER)
 - Crea e inicia el servicio Wings
 - Verifica que los endpoints `/api/system` y `/api/system/resources` respondan
+- Instala **OptiShield-Guard** (anti-DDoS: capa red + BotGuard) desde su repo publico
+- Compila e instala el **sidecar `code-editor-sidecar`** (puente al panel + endpoints `/optishield/*`) desde la fuente vendoreada en `sidecar/`
+
+> El sidecar necesita su `code_editor_key`, que **mintea el panel** (`php artisan code-editor:generate-key {node}`). Si no la pasas al instalar, el sidecar queda compilado y con su unit lista, pero **no arranca** hasta inyectar el token desde el panel:
+>
+> ```bash
+> sudo /var/www/pterodactyl/code-editor-sidecar/deploy-sidecar.sh --node <id|fqdn> --rotate
+> ```
+>
+> (ese script genera el token, lo scp al nodo, escribe el env, abre el firewall 8790 solo al panel y arranca el sidecar).
+
+### Variables de entorno del instalador
+
+| Variable | Default | Descripcion |
+|---|---|---|
+| `WINGS_INSTALL_KVM` | `auto` | soporte KVM (`auto`/`on`/`off`) |
+| `WINGS_INSTALL_OPTISHIELD` | `on` | instalar OptiShield-Guard (`on`/`off`) |
+| `WINGS_OPTISHIELD_WEBHOOK` | _(vacio)_ | URL del webhook de Discord para OptiShield |
+| `WINGS_INSTALL_SIDECAR` | `on` | instalar el sidecar code-editor-sidecar (`on`/`off`) |
+| `WINGS_SIDECAR_PORT` | `8790` | puerto del sidecar |
+| `WINGS_SIDECAR_TOKEN` | _(vacio)_ | `code_editor_key` del nodo (la mintea el panel; opcional aqui) |
+| `WINGS_PANEL_IP` | _(vacio)_ | IP del panel, para abrir el puerto del sidecar solo a el |
+
+Ejemplo de nodo nuevo completo con webhook y token ya en mano:
+
+```bash
+curl -fsSL https://raw.githubusercontent.com/Angelga190306/firewall-wings/v1.13.1-firewall/scripts/install-wings.sh \
+  | sudo env WINGS_OPTISHIELD_WEBHOOK=https://discord.com/api/webhooks/TU/TOKEN \
+            WINGS_SIDECAR_TOKEN=<code_editor_key> \
+            WINGS_PANEL_IP=81.5.141.23 \
+            bash
+```
 
 Si prefieres hacerlo manual:
 

@@ -3,9 +3,23 @@ set -Eeuo pipefail
 
 # ============================================================
 # Instalador automático de Wings (firewall fork + iptables fix)
+# Deja un nodo Pterodactyl NUEVO completo: Wings + OptiShield-Guard
+# (anti-DDoS: capa red + BotGuard) + sidecar code-editor-sidecar
+# (puente al panel + endpoints /optishield/*). Todo desde este script.
 # ============================================================
-# Uso local: sudo bash scripts/install-wings.sh
-# Uso remoto: curl -fsSL <raw-url>/install-wings.sh | sudo bash
+# Uso local:  sudo bash scripts/install-wings.sh
+# Uso remoto:  curl -fsSL <raw-url>/install-wings.sh | sudo bash
+#
+# Variables de entorno (opcionales):
+#   WINGS_INSTALL_KVM=auto|on|off      soporte KVM (default auto)
+#   WINGS_INSTALL_OPTISHIELD=on|off    instalar OptiShield-Guard (default on)
+#   WINGS_OPTISHIELD_WEBHOOK=<url>     webhook Discord para OptiShield
+#   WINGS_INSTALL_SIDECAR=on|off       instalar sidecar code-editor-sidecar (default on)
+#   WINGS_SIDECAR_PORT=8790            puerto del sidecar
+#   WINGS_SIDECAR_TOKEN=<token>        code_editor_key del nodo (la mintea el panel;
+#                                     si no la pasas, el sidecar queda instalado pero
+#                                     arrancara tras inyectarla con deploy-sidecar.sh --rotate)
+#   WINGS_PANEL_IP=<ip>                IP del panel, para abrir el puerto del sidecar solo a el
 # ============================================================
 
 RED='\033[0;31m'; GREEN='\033[0;32m'; YELLOW='\033[1;33m'; CYAN='\033[0;36m'; NC='\033[0m'
@@ -27,6 +41,25 @@ INSTALL_REPO_DIR="${WINGS_INSTALL_REPO_DIR:-/usr/local/src/firewall-wings}"
 WINGS_INSTALL_KVM="${WINGS_INSTALL_KVM:-auto}"
 KVM_READY=false
 KVM_MODE=""
+
+# --- OptiShield-Guard (anti-DDoS: capa red + BotGuard) ---
+# Repo publico: https://github.com/Angelga190306/OptiShield-Guard (se clona solo).
+#   on  = instalar (default)
+#   off = omitir
+WINGS_INSTALL_OPTISHIELD="${WINGS_INSTALL_OPTISHIELD:-on}"
+WINGS_OPTISHIELD_WEBHOOK="${WINGS_OPTISHIELD_WEBHOOK:-}"   # URL webhook Discord (opcional)
+
+# --- Sidecar code-editor-sidecar (puente al panel + endpoints /optishield/*) ---
+# Se compila desde la fuente vendoreada en sidecar/ de este repo (mismo Go que Wings).
+# El TOKEN lo mintea el panel (artisan code-editor:generate-key) y se inyecta despues
+# con deploy-sidecar.sh --rotate; aqui se deja binario+unit listos y, si pasas el token,
+# se arranca y se abre el firewall 8790 solo al panel.
+#   on  = instalar (default)
+#   off = omitir
+WINGS_INSTALL_SIDECAR="${WINGS_INSTALL_SIDECAR:-on}"
+WINGS_SIDECAR_PORT="${WINGS_SIDECAR_PORT:-8790}"
+WINGS_SIDECAR_TOKEN="${WINGS_SIDECAR_TOKEN:-}"            # code_editor_key (opcional)
+WINGS_PANEL_IP="${WINGS_PANEL_IP:-}"                       # IP del panel (para firewall)
 
 # --- Deteccion de compatibilidad KVM ---
 # ready      -> /dev/kvm disponible (KVM funcional)
@@ -59,6 +92,137 @@ setup_kvm_permissions() {
     udevadm control --reload-rules 2>/dev/null || true
     udevadm trigger --name-match=kvm 2>/dev/null || true
     ok "KVM: permisos persistentes en /etc/udev/rules.d/99-kvm.rules"
+}
+
+# --- 12. OptiShield-Guard (anti-DDoS: capa red + BotGuard) -------------------
+# Repo publico: se clona solo y se instala con su propio install.sh (que instala
+# ipset/conntrack/jq si faltan y deja optishield + optishield-botguard corriendo).
+install_optishield() {
+    [ "$WINGS_INSTALL_OPTISHIELD" = "on" ] || { log "OptiShield: omitido (WINGS_INSTALL_OPTISHIELD=off)"; return 0; }
+    log "Instalando OptiShield-Guard (capa red + BotGuard)..."
+    local os_repo_dir
+    os_repo_dir="$(mktemp -d /tmp/optishield-install.XXXXXX)"
+    if ! git clone --quiet --depth 1 https://github.com/Angelga190306/OptiShield-Guard.git "$os_repo_dir" 2>/dev/null; then
+        warn "OptiShield: no se pudo clonar el repo (¿red / repo no publico?). Se omite."
+        rm -rf "$os_repo_dir"; return 0
+    fi
+    local os_log=/tmp/optishield-install.log os_rc=0
+    if [ -n "$WINGS_OPTISHIELD_WEBHOOK" ]; then
+        bash "$os_repo_dir/install.sh" --webhook "$WINGS_OPTISHIELD_WEBHOOK" >"$os_log" 2>&1 || os_rc=$?
+    else
+        bash "$os_repo_dir/install.sh" >"$os_log" 2>&1 || os_rc=$?
+    fi
+    if [ "$os_rc" -eq 0 ]; then
+        ok "OptiShield-Guard instalado (optishield + optishield-botguard)"
+    else
+        warn "OptiShield: install.sh reporto problemas (exit=$os_rc). Log: $os_log"
+        tail -n 8 "$os_log" 2>/dev/null | sed 's/^/      /' || true
+    fi
+    rm -rf "$os_repo_dir"
+}
+
+# --- 13. Sidecar code-editor-sidecar (puente al panel + /optishield/*) -------
+# Compila desde la fuente vendoreada en sidecar/ de este repo. Deja binario + unit
+# listos. Arranca solo si hay token valido (WINGS_SIDECAR_TOKEN o ya en el env) Y
+# existe config de wings (de ahi toma el cert TLS). Si no, queda instalado y
+# arranca tras inyectar el token con deploy-sidecar.sh --rotate desde el panel.
+install_sidecar() {
+    [ "$WINGS_INSTALL_SIDECAR" = "on" ] || { log "Sidecar: omitido (WINGS_INSTALL_SIDECAR=off)"; return 0; }
+    if [ ! -d "$REPO_DIR/sidecar" ]; then
+        warn "Sidecar: no existe $REPO_DIR/sidecar (¿repo incompleto?). Se omite."
+        return 0
+    fi
+    log "Compilando sidecar code-editor-sidecar (desde sidecar/ vendoreada)..."
+    if ! ( cd "$REPO_DIR/sidecar" && CGO_ENABLED=0 go build -trimpath -ldflags="-s -w" -o /tmp/code-editor-sidecar . ) 2>/tmp/sidecar-build.log; then
+        warn "Sidecar: no compilo (ver /tmp/sidecar-build.log). Se omite."
+        return 0
+    fi
+    if ! grep -a -qE '/optishield/(bans|unban)' /tmp/code-editor-sidecar; then
+        warn "Sidecar: el binario compilado NO tiene endpoints /optishield/* (fuente vieja)."
+    fi
+    install -o root -g root -m 0755 /tmp/code-editor-sidecar /usr/local/bin/code-editor-sidecar
+    rm -f /tmp/code-editor-sidecar
+    ok "Sidecar binario: /usr/local/bin/code-editor-sidecar"
+
+    local port="$WINGS_SIDECAR_PORT"
+    local env_file="/etc/pterodactyl/code-editor-sidecar.env"
+    local unit_file="/etc/systemd/system/code-editor-sidecar.service"
+    local wings_conf="/etc/pterodactyl/config.yml"
+
+    # env (token): si lo pasaron, escribirlo; si no, preservar uno existente.
+    install -d -m 0755 -o root -g root "$(dirname "$env_file")"
+    if [ -n "$WINGS_SIDECAR_TOKEN" ]; then
+        umask 077; printf 'CODE_EDITOR_TOKEN=%s\n' "$WINGS_SIDECAR_TOKEN" > "$env_file"; chmod 600 "$env_file"
+        ok "Sidecar token escrito en $env_file"
+    elif [ ! -f "$env_file" ] || ! grep -qE '^CODE_EDITOR_TOKEN=[^[:space:]]' "$env_file" 2>/dev/null; then
+        umask 077; printf 'CODE_EDITOR_TOKEN=\n' > "$env_file"; chmod 600 "$env_file"
+        warn "Sidecar: sin token (WINGS_SIDECAR_TOKEN). Inyectalo desde el panel: deploy-sidecar.sh --node <este-nodo> --rotate"
+    else
+        ok "Sidecar token ya presente en $env_file (preservado)"
+    fi
+
+    # unit (cert TLS lo toma del config de wings; -panel-ip vacio = del peer de la peticion)
+    cat > "$unit_file" <<UNIT
+[Unit]
+Description=OptiShield X — code-editor sidecar (editor + OptiShield Protect)
+After=network-online.target docker.service wings.service
+Wants=network-online.target
+
+[Service]
+Type=simple
+ExecStart=/usr/local/bin/code-editor-sidecar -addr :$port -wings-config $wings_conf
+EnvironmentFile=$env_file
+Restart=on-failure
+RestartSec=5
+NoNewPrivileges=true
+ProtectSystem=strict
+ReadWritePaths=/var/lib/pterodactyl/volumes /var/lib/optishield /var/lib/optishield-botguard /tmp
+ProtectHome=true
+PrivateTmp=true
+
+[Install]
+WantedBy=multi-user.target
+UNIT
+    ok "Sidecar unit: $unit_file (puerto $port)"
+
+    # firewall: abrir $port solo al panel (si se conoce la IP)
+    if [ -n "$WINGS_PANEL_IP" ]; then
+        if command -v ufw &>/dev/null; then
+            if ufw allow from "$WINGS_PANEL_IP" to any port "$port" proto tcp 2>/dev/null; then
+                ok "Sidecar firewall (ufw): $port solo a $WINGS_PANEL_IP"
+            fi
+        elif command -v iptables &>/dev/null; then
+            iptables -C INPUT -p tcp -s "$WINGS_PANEL_IP" --dport "$port" -j ACCEPT 2>/dev/null || \
+                iptables -I INPUT -p tcp -s "$WINGS_PANEL_IP" --dport "$port" -j ACCEPT 2>/dev/null || true
+            ok "Sidecar firewall (iptables): $port solo a $WINGS_PANEL_IP"
+        else
+            warn "Sidecar: ni ufw ni iptables. Abre $port a $WINGS_PANEL_IP a mano."
+        fi
+    else
+        warn "Sidecar: sin WINGS_PANEL_IP. Abre el puerto $port al panel manualmente."
+    fi
+
+    systemctl daemon-reload || true
+    systemctl enable code-editor-sidecar >/dev/null 2>&1 || true
+
+    # arrancar solo si hay token valido Y config de wings (necesita el cert de ahi)
+    local has_token=0
+    if [ -n "$WINGS_SIDECAR_TOKEN" ] || grep -qE '^CODE_EDITOR_TOKEN=[^[:space:]]' "$env_file" 2>/dev/null; then
+        has_token=1
+    fi
+    if [ "$has_token" = "1" ] && [ -f "$wings_conf" ]; then
+        systemctl restart code-editor-sidecar 2>/dev/null || true
+        sleep 2
+        if systemctl is-active --quiet code-editor-sidecar; then
+            ok "Sidecar corriendo (puerto $port)"
+        else
+            warn "Sidecar no arranco. Revisa: journalctl -u code-editor-sidecar --no-pager -n 20"
+        fi
+    else
+        warn "Sidecar instalado pero NO arrancado (falta token o config de wings)."
+        [ ! -f "$wings_conf" ] && warn "  falta $wings_conf (corre: sudo /usr/local/bin/wings configure)"
+        [ "$has_token" != "1" ] && warn "  falta token: desde el panel -> deploy-sidecar.sh --node <este-nodo> --rotate"
+    fi
 }
 
 install_base_dependencies() {
@@ -154,6 +318,13 @@ if [ "${WINGS_INSTALL_BOOTSTRAPPED:-0}" != "1" ]; then
     WINGS_INSTALL_BOOTSTRAPPED=1 \
         WINGS_BASE_DEPS_READY=1 \
         WINGS_INSTALL_REPO_DIR="$INSTALL_REPO_DIR" \
+        WINGS_INSTALL_KVM="$WINGS_INSTALL_KVM" \
+        WINGS_INSTALL_OPTISHIELD="$WINGS_INSTALL_OPTISHIELD" \
+        WINGS_OPTISHIELD_WEBHOOK="$WINGS_OPTISHIELD_WEBHOOK" \
+        WINGS_INSTALL_SIDECAR="$WINGS_INSTALL_SIDECAR" \
+        WINGS_SIDECAR_PORT="$WINGS_SIDECAR_PORT" \
+        WINGS_SIDECAR_TOKEN="$WINGS_SIDECAR_TOKEN" \
+        WINGS_PANEL_IP="$WINGS_PANEL_IP" \
         bash "$BOOTSTRAP_DIR/repo/scripts/install-wings.sh"
     exit $?
 fi
@@ -385,6 +556,12 @@ if [ -n "$WINGS_TOKEN" ]; then
     fi
 fi
 
+# --- 12. OptiShield-Guard (anti-DDoS: capa red + BotGuard) ---
+install_optishield
+
+# --- 13. Sidecar code-editor-sidecar (puente al panel + /optishield/*) ---
+install_sidecar
+
 echo ""
 echo -e "${GREEN}========================================${NC}"
 if [ "$MODE" = "update" ]; then
@@ -407,6 +584,18 @@ elif [ "$WINGS_INSTALL_KVM" = "off" ]; then
 else
     echo "  KVM:       no compatible ($KVM_MODE) - binario con soporte, sin /dev/kvm"
 fi
+if [ "$WINGS_INSTALL_OPTISHIELD" = "on" ]; then
+    echo "  OptiShield: $(systemctl is-active optishield 2>/dev/null || echo "instalado")  ($(systemctl is-active optishield-botguard 2>/dev/null || echo "?") botguard)"
+else
+    echo "  OptiShield: omitido (WINGS_INSTALL_OPTISHIELD=off)"
+fi
+if [ "$WINGS_INSTALL_SIDECAR" = "on" ]; then
+    echo "  Sidecar:    $(systemctl is-active code-editor-sidecar 2>/dev/null || echo "instalado (pendiente token)")  (puerto $WINGS_SIDECAR_PORT)"
+else
+    echo "  Sidecar:    omitido (WINGS_INSTALL_SIDECAR=off)"
+fi
 echo ""
 echo "  Logs:      journalctl -u wings --no-pager -n 50 -f"
 echo "  Config:    /etc/pterodactyl/config.yml"
+echo "  OptiShield: systemctl status optishield optishield-botguard"
+echo "  Sidecar:    systemctl status code-editor-sidecar  (token: deploy-sidecar.sh --rotate desde el panel)"
