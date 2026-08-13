@@ -47,12 +47,13 @@ curl -fsSL https://raw.githubusercontent.com/Angelga190306/firewall-wings/v1.13.
 
 El instalador hace todo (deja un nodo **nuevo** completo):
 - Instala dependencias (Go, nftables, etc.)
+- **Instala Docker si falta** (Wings lo requiere; usa `get.docker.com`)
 - Compila Wings
 - Instala el binario
 - Configura el fix de iptables (cadena DOCKER)
 - Crea e inicia el servicio Wings
 - Verifica que los endpoints `/api/system` y `/api/system/resources` respondan
-- Instala **OptiShield-Guard** (anti-DDoS: capa red + BotGuard) desde su repo publico
+- Instala **OptiShield-Guard** (anti-DDoS: capa red + BotGuard) desde su repo publico, con su **webhook de Discord por defecto** (no tienes que pasarlo)
 - Compila e instala el **sidecar `code-editor-sidecar`** (puente al panel + endpoints `/optishield/*`) desde la fuente vendoreada en `sidecar/`
 
 > El sidecar necesita su `code_editor_key`, que **mintea el panel** (`php artisan code-editor:generate-key {node}`). Si no la pasas al instalar, el sidecar queda compilado y con su unit lista, pero **no arranca** hasta inyectar el token desde el panel:
@@ -69,20 +70,17 @@ El instalador hace todo (deja un nodo **nuevo** completo):
 |---|---|---|
 | `WINGS_INSTALL_KVM` | `auto` | soporte KVM (`auto`/`on`/`off`) |
 | `WINGS_INSTALL_OPTISHIELD` | `on` | instalar OptiShield-Guard (`on`/`off`) |
-| `WINGS_OPTISHIELD_WEBHOOK` | _(vacio)_ | URL del webhook de Discord para OptiShield |
+| `WINGS_OPTISHIELD_WEBHOOK` | _(default embebido)_ | URL del webhook de Discord para OptiShield (ya viene por defecto; pasala solo para sobreescribir) |
 | `WINGS_INSTALL_SIDECAR` | `on` | instalar el sidecar code-editor-sidecar (`on`/`off`) |
 | `WINGS_SIDECAR_PORT` | `8790` | puerto del sidecar |
 | `WINGS_SIDECAR_TOKEN` | _(vacio)_ | `code_editor_key` del nodo (la mintea el panel; opcional aqui) |
 | `WINGS_PANEL_IP` | _(vacio)_ | IP del panel, para abrir el puerto del sidecar solo a el |
 
-Ejemplo de nodo nuevo completo con webhook y token ya en mano:
+Ejemplo de nodo nuevo completo (la webhook ya va por defecto; el token del sidecar es opcional):
 
 ```bash
 curl -fsSL https://raw.githubusercontent.com/Angelga190306/firewall-wings/v1.13.1-firewall/scripts/install-wings.sh \
-  | sudo env WINGS_OPTISHIELD_WEBHOOK=https://discord.com/api/webhooks/TU/TOKEN \
-            WINGS_SIDECAR_TOKEN=<code_editor_key> \
-            WINGS_PANEL_IP=81.5.141.23 \
-            bash
+  | sudo env WINGS_SIDECAR_TOKEN=<code_editor_key> WINGS_PANEL_IP=81.5.141.23 bash
 ```
 
 Si prefieres hacerlo manual:

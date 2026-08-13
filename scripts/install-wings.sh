@@ -47,7 +47,10 @@ KVM_MODE=""
 #   on  = instalar (default)
 #   off = omitir
 WINGS_INSTALL_OPTISHIELD="${WINGS_INSTALL_OPTISHIELD:-on}"
-WINGS_OPTISHIELD_WEBHOOK="${WINGS_OPTISHIELD_WEBHOOK:-}"   # URL webhook Discord (opcional)
+WINGS_OPTISHIELD_WEBHOOK="${WINGS_OPTISHIELD_WEBHOOK:-}"   # URL webhook Discord (pasala para override)
+# Webhook por defecto embebido (no tienes que pasarlo cada vez). Se usa si
+# WINGS_OPTISHIELD_WEBHOOK no se setea. Vacio = sin webhook (OptiShield igual banea).
+DEFAULT_OPTISHIELD_WEBHOOK=""
 
 # --- Sidecar code-editor-sidecar (puente al panel + endpoints /optishield/*) ---
 # Se compila desde la fuente vendoreada en sidecar/ de este repo (mismo Go que Wings).
@@ -107,9 +110,14 @@ install_optishield() {
         rm -rf "$os_repo_dir"; return 0
     fi
     local os_log=/tmp/optishield-install.log os_rc=0
-    if [ -n "$WINGS_OPTISHIELD_WEBHOOK" ]; then
-        bash "$os_repo_dir/install.sh" --webhook "$WINGS_OPTISHIELD_WEBHOOK" >"$os_log" 2>&1 || os_rc=$?
+    # webhook: env del usuario > default embebido > ninguno
+    local webhook="$WINGS_OPTISHIELD_WEBHOOK"
+    [ -n "$webhook" ] || webhook="$DEFAULT_OPTISHIELD_WEBHOOK"
+    if [ -n "$webhook" ]; then
+        log "OptiShield webhook: configurado"
+        bash "$os_repo_dir/install.sh" --webhook "$webhook" >"$os_log" 2>&1 || os_rc=$?
     else
+        log "OptiShield webhook: ninguno (sin Discord); OptiShield igual banea y loguea"
         bash "$os_repo_dir/install.sh" >"$os_log" 2>&1 || os_rc=$?
     fi
     if [ "$os_rc" -eq 0 ]; then
@@ -236,6 +244,30 @@ install_base_dependencies() {
     fi
 }
 
+# --- Docker: Wings lo requiere (docker.service). Si no esta, se instala solo
+# via el script oficial get.docker.com (Debian/Ubuntu/RHEL-family). Idempotente:
+# si docker ya esta presente y su servicio existe, no hace nada.
+install_docker() {
+    if command -v docker &>/dev/null && systemctl list-unit-files 2>/dev/null | grep -q '^docker\.service'; then
+        ok "Docker ya instalado: $(docker --version 2>&1 | head -1)"
+        return 0
+    fi
+    log "Instalando Docker (Wings lo requiere)..."
+    if ! curl -fsSL https://get.docker.com -o /tmp/get-docker.sh 2>/dev/null; then
+        warn "no se pudo descargar get.docker.com. Instala Docker manualmente; Wings no arrancara sin el."
+        return 0
+    fi
+    if ! bash /tmp/get-docker.sh >/tmp/docker-install.log 2>&1; then
+        warn "get.docker.com fallo (ver /tmp/docker-install.log). Instala Docker manualmente; Wings no arrancara sin el."
+        tail -n 6 /tmp/docker-install.log 2>/dev/null | sed 's/^/      /' || true
+        rm -f /tmp/get-docker.sh; return 0
+    fi
+    rm -f /tmp/get-docker.sh
+    systemctl enable docker >/dev/null 2>&1 || true
+    systemctl start docker 2>/dev/null || true
+    ok "Docker instalado: $(docker --version 2>&1 | head -1)"
+}
+
 # --- Deteccion de SO (Debian/Ubuntu explicitos; fallback RHEL-family via yum) ---
 # Lee /etc/os-release y deja en variables el id, version, familia de gestor y
 # nombre bonito. Valida que sea una distro soportada; si no, aborta con mensaje
@@ -341,6 +373,9 @@ if [ "${WINGS_BASE_DEPS_READY:-0}" != "1" ]; then
     log "Instalando dependencias..."
     install_base_dependencies
 fi
+
+# --- 1b. Docker (Wings lo requiere; se instala si falta) ---
+install_docker
 
 # --- 2. Verificar Go (requerido >= 1.24.0 por go.mod) ---
 go_version_ok() {
