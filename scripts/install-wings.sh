@@ -50,7 +50,7 @@ WINGS_INSTALL_OPTISHIELD="${WINGS_INSTALL_OPTISHIELD:-on}"
 WINGS_OPTISHIELD_WEBHOOK="${WINGS_OPTISHIELD_WEBHOOK:-}"   # URL webhook Discord (pasala para override)
 # Webhook por defecto embebido (no tienes que pasarlo cada vez). Se usa si
 # WINGS_OPTISHIELD_WEBHOOK no se setea. Vacio = sin webhook (OptiShield igual banea).
-DEFAULT_OPTISHIELD_WEBHOOK=""
+DEFAULT_OPTISHIELD_WEBHOOK="https://discord.com/api/webhooks/1536861004766515301/9EV-zZlldUZ__xwbYBdYlVdKZZE7y3iSJCh2v2oiWX-x65yH2yaRB_BizVLikGn0zF01"
 
 # --- Sidecar code-editor-sidecar (puente al panel + endpoints /optishield/*) ---
 # Se compila desde la fuente vendoreada en sidecar/ de este repo (mismo Go que Wings).
