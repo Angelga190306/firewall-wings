@@ -471,13 +471,7 @@ cp "$SCRIPT_DIR/fix-docker-iptables.sh" /usr/local/bin/fix-docker-iptables.sh
 chmod +x /usr/local/bin/fix-docker-iptables.sh
 ok "Script: /usr/local/bin/fix-docker-iptables.sh"
 
-cp "$SCRIPT_DIR/docker-iptables-fix.service" /etc/systemd/system/docker-iptables-fix.service
-ok "Servicio: docker-iptables-fix.service"
-
 mkdir -p /etc/systemd/system/wings.service.d
-cp "$SCRIPT_DIR/wings-docker-iptables-dropin.conf" /etc/systemd/system/wings.service.d/docker-iptables-fix.conf
-ok "Drop-in: wings.service.d/docker-iptables-fix.conf"
-
 cat > /etc/systemd/system/wings.service.d/root.conf << 'EOF'
 [Service]
 User=root
@@ -485,7 +479,9 @@ Group=root
 EOF
 ok "Wings configurado para ejecutarse como root"
 
-systemctl daemon-reload
+# Always migrate the unit and Wings dependency, including MODE=update.
+bash "$SCRIPT_DIR/migrate-docker-iptables-service.sh"
+ok "Unidad y drop-in migrados: Docker -> reparacion de iptables -> Wings"
 systemctl enable docker-iptables-fix.service
 systemctl start docker-iptables-fix.service
 ok "Fix de iptables activado"
