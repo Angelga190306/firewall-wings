@@ -1,0 +1,38 @@
+name: Docker iptables startup
+
+on:
+  push:
+    paths:
+      - 'scripts/**'
+      - 'tests/systemd/**'
+      - '.github/workflows/docker-iptables-startup.yaml'
+  pull_request:
+    paths:
+      - 'scripts/**'
+      - 'tests/systemd/**'
+      - '.github/workflows/docker-iptables-startup.yaml'
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  startup:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@8e8c483db84b4bee98b60c0593521ed34d9990e8 # v6.0.1
+      - name: Check shell syntax
+        run: |
+          for script in scripts/*.sh tests/systemd/*.sh; do
+            bash -n "$script"
+          done
+      - name: Prepare disposable runner
+        run: |
+          sudo apt-get update -qq
+          sudo apt-get install -y jq iptables
+          # Only stop the runner's daemon if no containers are running.
+          test -z "$(sudo docker ps -q)"
+          sudo systemctl stop docker.socket docker.service
+      - name: Verify graph, cold start, and live migration
+        run: sudo env WINGS_SYSTEMD_TEST_DISPOSABLE=1 bash tests/systemd/docker-iptables-startup.sh

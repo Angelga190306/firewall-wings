@@ -239,6 +239,7 @@ git fetch --all
 git checkout v1.13.1-firewall
 git pull --ff-only origin v1.13.1-firewall
 go build -o wings .
+bash scripts/migrate-docker-iptables-service.sh
 systemctl stop wings
 install -m 755 ./wings /usr/local/bin/wings
 systemctl start wings
@@ -297,12 +298,40 @@ O paso a paso:
 ```bash
 cp scripts/fix-docker-iptables.sh /usr/local/bin/fix-docker-iptables.sh
 chmod +x /usr/local/bin/fix-docker-iptables.sh
-cp scripts/docker-iptables-fix.service /etc/systemd/system/docker-iptables-fix.service
-mkdir -p /etc/systemd/system/wings.service.d
-cp scripts/wings-docker-iptables-dropin.conf /etc/systemd/system/wings.service.d/docker-iptables-fix.conf
-systemctl daemon-reload
+bash scripts/migrate-docker-iptables-service.sh
 systemctl enable --now docker-iptables-fix.service
 ```
+
+### Migrar nodos existentes sin reiniciar servicios
+
+Desde un checkout actualizado de este repositorio, como root:
+
+```bash
+bash scripts/migrate-docker-iptables-service.sh
+```
+
+La instalacion y la actualizacion automatica tambien ejecutan esta migracion.
+Sustituye la unidad antigua y el drop-in de dependencia de Wings y ejecuta
+`systemctl daemon-reload`. No reinicia Docker, Wings ni contenedores, no ejecuta
+el script de reparacion y no vacia reglas del firewall. Conserva los demas
+drop-ins y la unidad principal de Wings.
+
+El orden del proximo arranque es `Docker -> reparacion de reglas -> Wings`.
+La reparacion requiere Docker, se ejecuta despues de `docker.service` y
+`network-online.target`, y tiene `TimeoutStartSec=60s`. Wings conserva
+`After=` y `Requires=docker-iptables-fix.service`: si la reparacion falla,
+Wings no arranca. La unidad ya no contiene `Before=docker.service` ni
+`DefaultDependencies=no`, que provocaban el bloqueo al consultar la API de Docker.
+
+La migracion no cancela un proceso de reparacion que ya este bloqueado ni
+reanuda trabajos pendientes: para un nodo atascado se debe revisar su estado
+con `systemctl list-jobs` y el journal antes de intervenir.
+
+La prueba `tests/systemd/docker-iptables-startup.sh` valida dependencias con
+`systemd-analyze verify`, arranca desde Docker detenido y comprueba el orden,
+la migracion repetida y la conservacion de un contenedor activo y una regla
+ajena. Solo debe ejecutarse en una VM desechable; el workflow
+`Docker iptables startup` la ejecuta en un runner de GitHub Actions.
 
 ## KVM (LumenVM) - opcional
 
